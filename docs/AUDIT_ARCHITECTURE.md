@@ -1,365 +1,505 @@
-# Audit technique de l’existant
+# Audit technique de l'existant
 
-Ce document constitue un audit technique basé uniquement sur les fichiers présents dans le dépôt : app/main.js, app/package.json, app/Dockerfile, docker-compose.yml, app/init.sql et app/tests.
+> **Dernière mise à jour :** 2026-06-26  
+> **Périmètre :** `app/`, `docker-compose.yml`, `.env.dist`, `.dockerignore`, `docs/`, `README.md`
+
+### Légende des statuts
+
+| Symbole | Signification |
+|---------|---------------|
+| 🔴 | Ouvert — non traité |
+| 🟡 | Partiel — amélioration en cours ou incomplète |
+| 🟢 | Résolu |
+
+---
 
 ## 1. Architecture
 
 ### Structure du projet
-Le dépôt est organisé autour d’un monolithe simple :
 
-- app/main.js : cœur applicatif unique, contient l’API Express, la logique métier, la configuration PostgreSQL, les métriques et le démarrage du serveur.
-- app/public : frontend statique, HTML/CSS/JS.
-- app/tests : tests de propriétés et validations fonctionnelles.
-- app/init.sql : schéma SQL et données initiales.
-- app/Dockerfile : définition de l’image applicative.
-- docker-compose.yml : orchestration locale de l’application et de la base.
+Le dépôt est organisé autour d'un monolithe simple :
+
+- `app/main.js` : cœur applicatif unique (API Express, logique métier, PostgreSQL, métriques, démarrage serveur).
+- `app/public/` : frontend statique HTML/CSS/JS (`app.js` appelle directement les endpoints API).
+- `app/tests/` : tests de propriétés et validations fonctionnelles.
+- `app/init.sql` : schéma SQL et données initiales.
+- `app/Dockerfile` : définition de l'image applicative (à optimiser).
+- `docker-compose.yml` : orchestration locale app + PostgreSQL.
+- `.env.dist` / `.env` : variables d'environnement (secrets hors Git).
+- `docs/` : documentation technique (`GUIDE-ETUDIANT.md`, `OPTIMISATION.md`, cet audit).
 
 ### Responsabilités par dossier
-- app/main.js assume plusieurs responsabilités :
-  - création de l’application Express,
-  - définition de middleware,
+
+- `app/main.js` assume plusieurs responsabilités :
+  - création de l'application Express et middleware (`express.json`, métriques, static),
   - définition des routes API,
-  - configuration de la connexion PostgreSQL,
-  - collecte des métriques,
+  - configuration du pool PostgreSQL,
+  - collecte des métriques Prometheus,
   - démarrage du serveur,
-  - logique métier liée aux matchs, votes et classements.
-- app/public contient uniquement l’interface utilisateur.
-- app/init.sql définit le modèle de données et les données de départ.
-- app/tests valident le comportement de certaines routes.
+  - logique métier (matchs, votes, classements).
+- `app/public` contient uniquement l'interface utilisateur, couplée aux routes REST.
+- `app/init.sql` définit le modèle de données et les données de départ.
+- `app/tests` valident le comportement de certaines routes et du Dockerfile.
 
 ### Organisation du code
-Le code est globalement linéaire et centralisé. Il n’existe pas de séparation nette entre :
+
+Le code est globalement linéaire et centralisé. Il n'existe pas de séparation nette entre :
+
 - couche HTTP,
 - couche service,
 - couche accès aux données,
 - couche configuration.
 
 ### Couplage entre composants
+
 Le couplage est élevé :
+
 - la logique métier est intégrée dans la même unité que la configuration HTTP,
 - les routes accèdent directement à la base via le pool PostgreSQL défini dans le même fichier,
-- le frontend JavaScript connaît directement les endpoints de l’API.
+- le frontend JavaScript (`app/public/app.js`) connaît directement les endpoints de l'API.
 
-### Qualité de l’architecture
-L’architecture est adaptée à une démonstration pédagogique, mais elle n’est pas structurée pour une architecture cloud-native robuste :
+### Qualité de l'architecture
+
+L'architecture est adaptée à une démonstration pédagogique, mais elle n'est pas structurée pour une architecture cloud-native robuste :
+
 - monolithique,
 - peu modulable,
 - difficile à faire évoluer sans accroître la complexité,
 - peu adaptée à un découpage en services ou à une montée en charge par réplication maîtrisée.
 
+---
+
 ## 2. Docker
+
+**Taille image actuelle (mesurée) :** ~198 MB dont ~66 MB de `node_modules` (devDependencies incluses).
 
 ### Anti-patterns observés
 
-1. Structure multi-stage non réellement exploitée
-   - Le Dockerfile utilise un stage nommé builder, mais le runtime n’exploite pas une séparation claire entre image de build et image d’exécution.
-   - Impact : moins de clarté sur la production, image potentiellement plus lourde et moins maîtrisée.
+| # | Problème | Statut | Détail |
+|---|----------|:------:|--------|
+| 1 | Fausse multi-stage | 🔴 | `AS builder` sans second `FROM` — une seule stage effective |
+| 2 | Pas de séparation prod/dev | 🔴 | `npm install` sans `--omit=dev` → Jest, Supertest dans l'image |
+| 3 | `COPY . .` copie tout le contexte | 🔴 | `tests/`, `init.sql`, `Dockerfile` embarqués dans l'image |
+| 4 | `.dockerignore` inefficace | 🔴 | Fichier à la **racine** du repo, mais `build: ./app` → Docker lit `app/.dockerignore` qui **n'existe pas** |
+| 5 | `npm install` au lieu de `npm ci` | 🔴 | `package-lock.json` présent mais non exploité |
+| 6 | Pas de `NODE_ENV=production` | 🔴 | Comportement runtime moins maîtrisé |
+| 7 | Pas de `HEALTHCHECK` image | 🔴 | Pas de signal de santé au niveau conteneur |
+| 8 | Ownership `USER node` incorrect | 🔴 | `npm install` en root → `node_modules` appartient à root (uid 0), app tourne en `node` (uid 1000) |
 
-2. Installation des dépendances sans séparation production/dev
-   - Le Dockerfile exécute npm install sans indication de mode production.
-   - Impact : installation de dépendances de développement dans l’image finale, donc taille plus importante et surface d’attaque plus large.
+### Fichiers confirmés dans l'image (build réel)
 
-3. Copie de tout le contexte
-   - Le Dockerfile copie l’intégralité du contexte via COPY . .
-   - Impact : temps de build plus longs, plus de fichiers embarqués inutilement, risque d’inclusion de fichiers non nécessaires.
+| Fichier | Attendu en image app ? |
+|---------|:----------------------:|
+| `tests/` | Non |
+| `init.sql` | Non (rôle du conteneur Postgres) |
+| `jest.config.js` | Non |
+| `Dockerfile` | Non |
 
-4. Absence de fichier d’exclusion de build
-   - Aucune preuve d’un fichier de type .dockerignore n’est visible.
-   - Impact : augmentation du contexte Docker et des temps de build.
+### Score bonnes pratiques (`check-dockerfile.sh`)
 
-5. Réproductibilité limitée
-   - Le Dockerfile utilise npm install et non npm ci.
-   - Impact : moins de reproductibilité, dépendance à l’état du registre et des métadonnées de dépendances.
+| Critère | État |
+|---------|:----:|
+| Image alpine avec version fixe | ✅ |
+| USER non-root | ⚠️ partiel |
+| Multi-stage réel | ❌ |
+| `.dockerignore` effectif | ❌ |
+| Ordre des layers optimisé | ✅ |
 
-6. Pas de configuration explicite de l’environnement d’exécution
-   - Aucun NODE_ENV=production n’est défini.
-   - Impact : comportement moins maîtrisé, dépendances et runtime moins alignés sur un usage de production.
-
-7. Pas de healthcheck dans l’image
-   - L’image ne contient pas de HEALTHCHECK.
-   - Impact : un orchestrateur ne peut pas détecter proprement l’état de santé du conteneur.
+**Score effectif : ~2–3/5**
 
 ### Impact global
-Ces points affectent :
-- la taille de l’image,
-- la sécurité,
-- la répétabilité des builds,
-- la vitesse de construction,
-- la fiabilité opérationnelle dans un environnement de type Kubernetes ou ECS.
+
+Ces points affectent la taille de l'image, la sécurité, la reproductibilité des builds, la vitesse de construction et la fiabilité opérationnelle sur Kubernetes ou ECS.
+
+---
 
 ## 3. Docker Compose
 
-### Réseau
-- Le fichier utilise le réseau Docker par défaut.
-- Aucun réseau personnalisé n’est défini.
-- Aucun réseau isolé ou segmenté n’est configuré.
+### Réseau 🔴
 
-### Volumes
-- Un volume nommé pgdata est déclaré pour PostgreSQL.
-- Le script SQL est monté dans le répertoire de démarrage de PostgreSQL.
-- Cela permet une persistance locale des données.
+- Réseau Docker par défaut, aucun réseau personnalisé ou segmenté.
 
-### Variables d’environnement
-- Les variables de connexion PostgreSQL sont définies directement dans le fichier.
-- Les identifiants sont visibles en clair dans la configuration.
-- Aucune gestion de secrets externe n’est mise en place.
+### Volumes 🟡
 
-### Dépendances entre services
-- Le service applicatif dépend du service base de données via depends_on.
-- Cette dépendance ne garantit pas une disponibilité réelle de PostgreSQL au démarrage.
-- Le service applicatif peut démarrer avant que la base soit prête.
+- Volume nommé `pgdata` pour PostgreSQL — persistance locale OK.
+- `init.sql` monté dans `/docker-entrypoint-initdb.d/`.
+- **Piège :** le script ne s'exécute **qu'au premier démarrage** (volume vide). Modifier `init.sql` sans `docker compose down -v` ne change rien.
 
-### Healthchecks
-- Aucun healthcheck n’est défini dans docker-compose.yml.
-- Cela empêche une détection fiable de l’état de santé par un orchestrateur.
+### Variables d'environnement 🟡
 
-### Redémarrage
-- Aucune politique de redémarrage n’est définie.
-- En cas d’arrêt du conteneur, il ne se relancera pas automatiquement.
+- 🟢 **Résolu (local) :** secrets externalisés via `.env` (gitignoré) et `.env.dist` (modèle versionné).
+- Le compose référence `${POSTGRES_USER}`, `${POSTGRES_PASSWORD}`, `${POSTGRES_DB}`, `${DB_HOST}`, `${DB_PORT}` — plus de mots de passe en dur dans `docker-compose.yml`.
+- 🔴 **Ouvert (prod) :** pas de `Secret` Kubernetes équivalent.
 
-### Ports exposés
-- L’application est exposée sur le port 3000.
-- La base PostgreSQL n’est pas exposée sur l’hôte, ce qui est cohérent pour un usage local, mais limite l’accès direct depuis l’extérieur.
+### Dépendances entre services 🔴
+
+- `depends_on: db` attend le démarrage du conteneur, pas la disponibilité de PostgreSQL.
+- L'app peut démarrer avant la fin de l'initialisation (`init.sql`).
+
+### Healthchecks 🔴
+
+- Aucun healthcheck dans `docker-compose.yml`.
+- Issues GitHub : [#2](https://github.com/omega5z/cloud_worldcup/issues/2), [#3](https://github.com/omega5z/cloud_worldcup/issues/3).
+
+### Redémarrage 🔴
+
+- Aucune politique `restart` sur `app`.
+- Après `/api/admin/kill`, le conteneur reste en état `Exited`.
+- Issue GitHub : [#1](https://github.com/omega5z/cloud_worldcup/issues/1).
+
+### Autres points 🔴
+
+- `version: "3.8"` obsolète (warning Compose v2).
+- Tag `postgres:15` flottant — Issue [#4](https://github.com/omega5z/cloud_worldcup/issues/4).
+- Pas de limites CPU/RAM — Issue [#5](https://github.com/omega5z/cloud_worldcup/issues/5).
+- Port `3000:3000` bind sur `0.0.0.0` (toutes interfaces).
+
+### Ports exposés 🟡
+
+- Application exposée sur le port 3000 de l'hôte.
+- PostgreSQL non exposé sur l'hôte — cohérent pour un usage local.
+
+---
 
 ## 4. Application
 
 ### Cycle de vie
-L’application suit un cycle simple :
+
 - création du pool PostgreSQL au chargement du module,
-- création de l’application Express,
+- création de l'application Express,
 - enregistrement des routes et middleware,
-- démarrage du serveur si le fichier est exécuté comme point d’entrée principal.
+- démarrage du serveur si exécuté comme point d'entrée principal (`require.main === module`).
 
-### Démarrage
-Le serveur démarre sur le port 3000.
-Le démarrage ne vérifie pas la disponibilité de PostgreSQL avant de commencer à accepter des requêtes.
+### Démarrage 🔴
 
-### Gestion des erreurs
-- Certaines erreurs sont traitées localement dans les routes.
-- Un middleware gère les erreurs de parsing JSON.
-- Les erreurs de base sont renvoyées comme réponses JSON, mais il n’existe pas de stratégie globale de journalisation ou d’exception handling centralisé.
+- Port **3000 codé en dur** — pas de `process.env.PORT`.
+- Pas de vérification PostgreSQL avant d'accepter des requêtes.
+- Pas de gestion `SIGTERM` / `SIGINT` — rolling updates K8s risqués.
 
-### Connexions PostgreSQL
-- L’application utilise pg.Pool.
-- La configuration est simple et directe.
-- Aucun mécanisme de retry, de timeout finement paramétré, ni de stratégie de reconnexion n’est visible.
-- Le pool est créé à l’import du module, ce qui le rend dépendant du contexte d’exécution.
+### Gestion des erreurs 🔴
 
-### Gestion des secrets
-- Les credentials de base sont fournis via des valeurs par défaut dans le code et via des variables d’environnement.
-- Les secrets ne sont pas externisés dans un mécanisme sécurisé.
-- La configuration est exposée dans le fichier de composition.
+- Erreurs traitées localement dans les routes.
+- Middleware pour erreurs de parsing JSON.
+- Pas de journalisation structurée ni d'exception handling centralisé.
+
+### Connexions PostgreSQL 🟡
+
+- `pg.Pool` avec configuration via variables d'environnement.
+- Valeurs par défaut sensibles dans le code (`postgres` / `postgres` / `db`).
+- Pas de retry, timeout fin ni reconnexion explicite.
+- Pool créé à l'import du module.
+
+### Gestion des secrets 🟡
+
+- 🟢 Compose : credentials via `.env`.
+- 🔴 Code : defaults `postgres`/`postgres` dans `main.js` si variables absentes.
+- 🔴 Prod : pas de Secret K8s.
 
 ### Endpoints
-L’API expose plusieurs routes :
-- /api/health
-- /api/health/db
-- /api/compute
-- /api/data
-- /api/vote
-- /api/votes/results
-- /metrics
-- /api/admin/kill
-- diverses routes de lecture métier.
 
-### Métriques Prometheus
-- L’application utilise prom-client.
-- Elle expose des métriques de base du runtime Node.js et des métriques HTTP personnalisées.
-- Les métriques sont stockées en mémoire au sein du processus.
-- Aucune intégration à un collecteur externe n’est visible dans le code.
+| Route | Méthode | Rôle |
+|-------|---------|------|
+| `/` | GET | Page web (`index.html`) — **pas** un health check JSON |
+| `/api/health` | GET | Health check applicatif → `{"status":"ok"}` |
+| `/api/health/db` | GET | Health check PostgreSQL |
+| `/api/compute` | GET | Saturation CPU (2–3 s) |
+| `/api/teams` | GET | Liste des équipes |
+| `/api/groups` | GET | Équipes par groupe |
+| `/api/matches` | GET | Liste des matchs |
+| `/api/standings` | GET | Classement |
+| `/api/data` | POST | Insertion résultat match |
+| `/api/vote` | POST | Vote pour une équipe |
+| `/api/votes/results` | GET | Résultats des votes (%) |
+| `/metrics` | GET | Métriques Prometheus |
+| `/api/admin/kill` | POST | Crash volontaire (`process.exit(1)`) |
 
-### Endpoint de crash
-- /api/admin/kill provoque volontairement l’arrêt du processus.
-- Cet endpoint crée un risque opérationnel important dans un environnement partagé.
+**Probes Kubernetes recommandées :**
 
-### Endpoint de santé
-- /api/health est un healthcheck simple.
-- /api/health/db vérifie la connectivité PostgreSQL.
-- Ces endpoints sont utiles, mais ne couvrent pas de manière complète les besoins d’un orchestrateur moderne.
+- `livenessProbe` → `/api/health` (ne pas utiliser `/api/health/db`)
+- `readinessProbe` → `/api/health/db`
+
+### Métriques Prometheus 🟡
+
+- `prom-client` : métriques runtime Node.js + HTTP custom.
+- Stockage en mémoire par processus — chaque replica a ses propres compteurs.
+- `/metrics` exposé mais aucun collecteur (Prometheus/Grafana) configuré.
+
+### Endpoint de crash 🔴
+
+- `/api/admin/kill` arrête volontairement le processus.
+- Utile pour le crash-test capstone ; à protéger en production (NetworkPolicy, Ingress).
+
+---
 
 ## 5. PostgreSQL
 
 ### Structure SQL
-Le schéma est simple et clair :
-- teams
-- matches
-- votes
 
-### Schéma
-- teams contient les informations d’identification et de groupe.
-- matches stocke les résultats avec des clés étrangères vers teams.
-- votes stocke un vote par équipe.
+Schéma simple : `teams`, `matches`, `votes`.
 
-### Index
-Aucune index spécifique autre que les contraintes de clé primaire/étrangère n’est visible dans app/init.sql.
-Cela peut devenir limitant si le volume de données augmente.
+### Index 🔴
 
-### Initialisation
-L’initialisation est faite par un script SQL idempotent :
-- création des tables si elles n’existent pas,
-- insertion des équipes et matchs si absents.
+- Aucun index métier au-delà des PK/FK — limitant si le volume croît.
 
-### Persistance
-La persistance est assurée par un volume Docker nommé.
-Le stockage est donc localement persistant dans l’environnement Compose.
+### Initialisation 🟡
 
-### Risques
-- Pas de mécanisme de migration versionnée visible.
-- Pas de stratégie de sauvegarde ou de restauration documentée dans le code.
-- Pas de réplication ni de HA de la base.
-- Le modèle de données n’est pas conçu pour une montée en charge importante.
+- Script idempotent : `CREATE TABLE IF NOT EXISTS`, `ON CONFLICT DO NOTHING`.
+- Exécuté une seule fois par volume PostgreSQL (comportement standard `docker-entrypoint-initdb.d`).
+
+### Persistance 🟡
+
+- Volume Docker `pgdata` en local.
+- Pas de PVC Kubernetes, sauvegarde ni stratégie de restauration documentée.
+
+### Risques 🔴
+
+- Pas de migrations versionnées.
+- Pas de réplication ni HA.
+- Single Point of Failure.
+
+---
 
 ## 6. Cloud Readiness
 
-### Prêt pour Kubernetes
-L’application n’est pas prête de manière robuste pour Kubernetes :
-- absence de healthchecks de niveau conteneur,
-- absence de stratégie de redémarrage,
-- absence de configuration de ressources,
-- absence de readiness/liveness clairement définis,
-- absence de secrets externes,
-- absence de manifeste Kubernetes.
+### Prêt pour Kubernetes 🔴
 
-### Prêt pour AWS ECS
-Le niveau de readiness est limité :
-- conteneur Docker possible,
-- mais l’application n’est pas préparée pour un déploiement robuste avec :
-  - service discovery,
-  - health checks,
-  - auto-scaling,
-  - secrets,
-  - logging centralisé,
-  - réseau défini.
+| Élément | État |
+|---------|:----:|
+| Healthchecks conteneur | 🔴 |
+| Politique de redémarrage | 🔴 |
+| Limits/requests CPU/RAM | 🔴 |
+| Liveness / readiness probes | 🔴 (endpoints existent, pas de manifests) |
+| Secrets externes (K8s Secret) | 🔴 |
+| Manifestes Kubernetes | 🔴 |
+| Graceful shutdown (`SIGTERM`) | 🔴 |
+| Variable `PORT` | 🔴 |
+| Dockerfile production-ready | 🔴 |
 
-### Auto Scaling
-Le projet n’est actuellement pas préparé pour un auto-scaling pertinent :
-- pas de métriques externes exploitables par un orchestrateur,
-- pas de configuration de ressources,
-- pas de stratégie de charge,
-- pas de mécanisme de tolérance aux pannes au niveau du service.
+### Prêt pour AWS ECS 🔴
 
-### Load Balancer
-Aucun élément de type load balancer n’est défini dans le code ou la configuration fournie.
+Conteneur Docker possible, mais pas de service discovery, health checks orchestrateur, auto-scaling, secrets managés, logging centralisé ni réseau défini.
 
-### Plusieurs réplicas
-Plusieurs réplicas seraient problématiques sans préparation supplémentaire :
-- le service n’est pas conçu pour un état partagé,
-- les métriques sont locales au processus,
-- l’endpoint de crash volontaire introduit un risque de défaillance volontaire d’une instance,
-- la base reste un point central unique.
+### Auto Scaling 🔴
 
-### Ce qui empêche réellement un déploiement cloud-native
-Les principaux blocages observés sont :
-- absence d’outillage d’observabilité distribuée,
-- absence de gestion des secrets,
-- absence de healthchecks opérationnels,
-- absence de stratégie de redémarrage et de tolérance aux pannes,
-- dépendance à une base unique non préparée pour la haute disponibilité.
+- `/metrics` expose des métriques Prometheus exploitables, mais **aucun collecteur** ni HPA configuré.
+- Pas de configuration de ressources.
+- `/api/compute` est un cas d'école pour déclencher un HPA CPU.
+
+### Load Balancer 🔴
+
+Aucun load balancer ou Ingress défini.
+
+### Plusieurs réplicas 🟡
+
+Problématique sans préparation :
+
+- métriques locales par Pod (scraping per-Pod nécessaire),
+- endpoint de crash volontaire,
+- base PostgreSQL unique (SPOF),
+- pas d'état partagé côté app (acceptable pour ce monolithe stateless).
+
+### Blocages principaux pour un déploiement cloud-native
+
+1. Dockerfile non optimisé et `.dockerignore` inefficace.
+2. Compose sans résilience (restart, healthchecks) — non représentatif d'un Deployment K8s.
+3. Pas de manifestes K8s ni de pipeline CI build/push image.
+4. Observabilité non centralisée (logs, dashboards, alerting).
+5. Base unique sans HA.
+6. Secrets K8s non implémentés (partiel en local via `.env`).
+
+---
 
 ## 7. Observabilité
 
-### Logs
-- Les logs sont très limités.
-- Le code ne montre pas de logging structuré.
-- Les erreurs sont principalement renvoyées sous forme de réponse HTTP, pas journalisées de manière exploitable.
+### Logs 🔴
 
-### Métriques
-- Les métriques Prometheus existent.
-- Elles sont utiles pour un usage local, mais ne sont pas intégrées à une chaîne de monitoring complète.
+- Très limités (`console.log` au démarrage).
+- Pas de logging structuré.
+- Erreurs renvoyées en HTTP, peu journalisées.
 
-### Traces
-- Aucune trace distribuée n’est visible.
-- Aucun identifiant de requête ou contexte de traçage n’est mis en place.
+### Métriques 🟡
 
-### Alerting
-- Aucun mécanisme d’alerting n’est présent dans le code ou la configuration observable.
+- Prometheus endpoint présent (`/metrics`).
+- Pas de chaîne de monitoring complète (collecteur, dashboards).
 
-### Dashboards
-- Aucun dashboard n’est fourni.
+### Traces 🔴
+
+- Aucune trace distribuée ni identifiant de requête.
+
+### Alerting 🔴
+
+- Aucun mécanisme d'alerting.
+
+### Dashboards 🔴
+
+- Aucun dashboard fourni.
+
+---
 
 ## 8. Sécurité
 
-### Secrets
-- Les secrets de base de données sont visibles dans la configuration.
-- Le code comporte des valeurs par défaut sensibles.
+### Secrets 🟡
 
-### Utilisateur root
-- Le Dockerfile passe à un utilisateur non privilégié avec USER node.
-- Cela est positif, mais l’image n’est pas démontrée comme totalement durcie.
+- 🟢 Compose : externalisés dans `.env`.
+- 🔴 `main.js` : valeurs par défaut `postgres`/`postgres`.
+- 🔴 K8s : pas de Secret.
 
-### Permissions
-- Le code ne met pas en place de mécanismes de permissions ou d’authentification.
-- Les endpoints d’écriture sont accessibles sans contrôle d’accès.
+### Utilisateur root 🟡
 
-### Dépendances
-- Les dépendances sont définies avec des versions de type ^.
-- Aucune politique visible de verrouillage, de scan ou de suivi de vulnérabilités.
+- `USER node` présent — positif en apparence.
+- `npm install` et `COPY` en root ; `node_modules` non owned par `node`.
 
-### Surface d’attaque
-- L’API expose des endpoints d’écriture et un endpoint de crash volontaire.
-- L’application n’applique pas de rate limiting ni de limitation de taille de payload visible.
+### Permissions 🔴
 
-### Exposition réseau
-- Le service est exposé sur un port réseau.
-- La base est interne au réseau Docker, mais l’application n’est pas protégée par un niveau de sécurité réseau plus avancé.
+- Pas d'authentification ni d'autorisation.
+- Endpoints d'écriture ouverts sans contrôle d'accès.
+
+### Dépendances 🟡
+
+- Versions `^` dans `package.json` ; `package-lock.json` présent mais `npm ci` non utilisé dans le Dockerfile.
+- Pas de scan de vulnérabilités visible.
+
+### Surface d'attaque 🔴
+
+- Endpoints d'écriture et crash volontaire exposés.
+- Pas de rate limiting ni limite de payload visible.
+
+### Exposition réseau 🟡
+
+- App sur port 3000 (bind `0.0.0.0` en compose).
+- Postgres interne au réseau Docker uniquement.
+
+---
 
 ## 9. Performances
 
-### Goulets d’étranglement
-- La route /api/compute consomme du CPU de manière volontaire et intensive.
-- Le calcul du classement est fait côté application dans app/main.js, ce qui peut devenir coûteux si les données grossissent.
+### Goulets d'étranglement
 
-### Appels bloquants
-- Les requêtes PostgreSQL sont réalisées de manière synchrone via await sur des pool.query, ce qui est acceptable pour un monolithe simple, mais reste sensible à la latence réseau et au temps d’attente base.
+- `/api/compute` : saturation CPU volontaire (2–3 s).
+- Classement calculé côté application — coûteux si les données grossissent.
 
-### Connexions base de données
-- L’application utilise un pool, ce qui est un bon point de départ.
-- Cependant, la taille et la stratégie du pool ne sont pas configurées explicitement.
+### Connexions base de données 🟡
 
-### Consommation mémoire
-- Les métriques Prometheus sont en mémoire.
-- Aucun mécanisme de limitation ou d’optimisation mémoire n’est visible.
+- Pool PostgreSQL présent — bon point de départ.
+- Taille et stratégie du pool non configurées.
 
-### CPU
-- Le service est sensible à des charges CPU élevées, notamment via la route /api/compute.
-- Le cœur applicatif n’est pas optimisé pour des pics de charge importants.
+### CPU / mémoire 🔴
+
+- Sensible aux pics via `/api/compute`.
+- Métriques Prometheus en mémoire, pas de limites conteneur.
+
+---
 
 ## 10. Résilience
 
-### Single Point Of Failure
-- L’application est un seul service.
-- La base PostgreSQL est un point central unique.
-- Il n’existe pas de redondance sur le service applicatif ou la base.
+### Single Point Of Failure 🔴
 
-### Comportement en cas de crash
-- L’application peut être arrêtée volontairement via /api/admin/kill.
-- Sans politique de redémarrage, l’application reste hors service.
+- Un seul service applicatif et une seule base PostgreSQL.
+- Pas de redondance.
 
-### Comportement si PostgreSQL tombe
-- Les routes qui dépendent de la base retournent des erreurs.
-- Le service ne dispose pas de mécanisme de degradation ou de fallback visible.
+### Comportement en cas de crash 🔴
 
-### Comportement si plusieurs instances démarrent
-- L’application n’intègre pas de stratégie de coordination multi-instance.
-- Les métriques ne sont pas partagées.
-- Le modèle n’est pas adapté à un déploiement multi-répliques sans évolution complémentaire.
+- `/api/admin/kill` arrête le processus.
+- Sans `restart` dans compose, l'app reste hors service.
+- En K8s : `restartPolicy: Always` recréerait le Pod.
 
-## 11. Priorisation des travaux
+### Comportement si PostgreSQL tombe 🟡
 
-| Problème | Gravité | Impact | Priorité |
-|---|---|---:|---:|
-| Secrets en clair dans la configuration | Très élevée | Risque sécurité majeur | 1 |
-| Absence de healthchecks et de stratégie de redémarrage | Très élevée | Réduction de la résilience et du fonctionnement en orchestration | 1 |
-| Monolithe unique avec forte centralisation | Élevée | Limite la scalabilité et la modularité | 1 |
-| Absence de gestion de la base en haute disponibilité | Élevée | Risque de panne système complète | 1 |
-| Observabilité insuffisante (logs, traces, alerting) | Élevée | Diagnostic difficile en production | 2 |
-| Dockerfile peu adapté à la production | Élevée | Taille, sécurité, reproductibilité | 2 |
-| Absence de mécanismes de sécurité réseau et d’accès | Élevée | Surface d’attaque plus large | 2 |
-| Pas de stratégie de persistance et de sauvegarde visible | Moyenne | Risque de perte de données | 2 |
-| Métriques locales et non centralisées | Moyenne | Limite l’exploitation en environnement distribué | 3 |
-| Absence d’indexation et de tuning SQL visible | Moyenne | Risque de dégradation à mesure que les données croissent | 3 |
-| Endpoint de crash volontaire exposé | Moyenne | Risque opérationnel en environnement partagé | 3 |
+- Routes DB retournent des erreurs (`503` sur `/api/health/db`).
+- Pas de dégradation gracieuse ni fallback.
+
+### Multi-instances 🟡
+
+- App stateless (OK pour replicas).
+- Métriques non partagées entre Pods.
+- Nécessite readiness probe sur `/api/health/db`.
+
+---
+
+## 11. Préparation Kubernetes — VPS local
+
+Objectif capstone : déployer sur **Kubernetes** (k3s, kubeadm) sur un VPS.
+
+### Mapping Compose → Kubernetes
+
+| Compose | Kubernetes |
+|---------|------------|
+| `build: ./app` | CI → registry → `image:` dans Deployment |
+| `.env` | `Secret` + `ConfigMap` |
+| `ports: 3000:3000` | `Service` + `Ingress` (+ TLS) |
+| `depends_on` + healthcheck | `readinessProbe` + init container |
+| `restart: unless-stopped` | `restartPolicy: Always` |
+| `pgdata` volume | `PersistentVolumeClaim` |
+| `init.sql` mount | ConfigMap + Job d'init |
+| limits CPU/RAM | `resources.requests/limits` |
+
+### Stack recommandée (VPS ~8 GB / 4 vCPU)
+
+- **k3s** ou cluster léger
+- **Ingress** (Traefik / nginx) + **cert-manager** (TLS)
+- **Deployment** app (2+ replicas) + **HPA** CPU
+- **StatefulSet** PostgreSQL + PVC
+- **Prometheus + Grafana** (kube-prometheus-stack)
+
+### Chemin de migration
+
+```
+Phase 1 — Image & compose (local)
+  ├── Créer app/.dockerignore
+  ├── Réécrire Dockerfile multi-stage (npm ci --omit=dev)
+  ├── Durcir docker-compose (healthchecks, restart)
+  └── Corriger README / GUIDE
+
+Phase 2 — Manifestes K8s (VPS)
+  ├── Namespace + Secret + ConfigMap
+  ├── StatefulSet PostgreSQL + PVC
+  ├── Deployment app + probes
+  └── Ingress + TLS
+
+Phase 3 — Production capstone
+  ├── HPA (CPU, /api/compute)
+  ├── Prometheus scrape /metrics
+  ├── NetworkPolicy (DB interne only)
+  └── CI/CD : build → push → deploy
+```
+
+---
+
+## 12. Priorisation des travaux
+
+| Problème | Gravité | Statut | Priorité |
+|----------|---------|:------:|----------:|
+| Dockerfile non optimisé + `.dockerignore` inefficace | Très élevée | 🔴 | 1 |
+| Healthchecks + restart (compose / K8s probes) | Très élevée | 🔴 | 1 |
+| Secrets K8s (`Secret`) | Élevée | 🔴 | 1 |
+| Manifestes Kubernetes (VPS) | Élevée | 🔴 | 1 |
+| Monolithe / HA base de données | Élevée | 🔴 | 1 |
+| ~~Secrets en clair dans docker-compose.yml~~ | ~~Très élevée~~ | 🟢 | — |
+| Observabilité (collecte, dashboards, alerting) | Élevée | 🔴 | 2 |
+| Defaults secrets dans `main.js` | Moyenne | 🔴 | 2 |
+| Sécurité réseau (Ingress TLS, NetworkPolicy) | Élevée | 🔴 | 2 |
+| Documentation incorrecte (`GET /` vs `/api/health`) | Moyenne | 🔴 | 2 |
+| Graceful shutdown + variable `PORT` | Moyenne | 🔴 | 2 |
+| Sauvegarde / persistance K8s (PVC) | Moyenne | 🔴 | 2 |
+| Métriques non centralisées (multi-replicas) | Moyenne | 🔴 | 3 |
+| Index SQL / tuning | Moyenne | 🔴 | 3 |
+| Endpoint `/api/admin/kill` exposé publiquement | Moyenne | 🔴 | 3 |
+
+### Suivi
+
+- Corrections compose documentées : [`OPTIMISATION.md`](./OPTIMISATION.md)
+- Issues GitHub ouvertes : [#1](https://github.com/omega5z/cloud_worldcup/issues/1) – [#5](https://github.com/omega5z/cloud_worldcup/issues/5)
+
+---
 
 ## Conclusion
 
-L’existant est fonctionnel, pédagogique et suffisamment cohérent pour une démonstration locale, mais il n’est pas encore en mesure de supporter de manière robuste un déploiement Cloud Native à grande échelle. Les principaux blocages ne sont pas dans la logique métier elle-même, mais dans la préparation opérationnelle du système : résilience, sécurité, observabilité et capacité d’orchestration.
+L'existant est fonctionnel et adapté à une démonstration locale pédagogique. L'externalisation des secrets via `.env` est un premier pas vers l'industrialisation.
+
+Les blocages principaux avant un déploiement **Kubernetes sur VPS** restent :
+
+1. **Dockerfile** — fausse multi-stage, dev dependencies, `.dockerignore` non appliqué au build.
+2. **docker-compose** — pas de résilience ni healthchecks, donc comportement local non représentatif d'un Deployment K8s.
+3. **Infra K8s** — aucun manifeste, pas de CI, pas de monitoring centralisé.
+
+La trajectoire naturelle : **compose corrigé → image registry → manifests K8s sur VPS → HPA + monitoring**.
