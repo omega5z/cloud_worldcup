@@ -1,159 +1,95 @@
-# Optimisations Docker & orchestration locale
+# Optimisation du Dockerfile
 
-Ce document décrit les améliorations apportées au dépôt, leur justification, et ce qui reste à faire.
-
----
-
-## 1. Dockerfile — premières optimisations
-
-### Avant
-
-```dockerfile
-FROM node:latest
-
-WORKDIR /app
-
-COPY . .
-
-RUN npm install
-
-EXPOSE 3000
-
-CMD ["node", "main.js"]
-```
-
-### Après
-
-```dockerfile
-FROM node:20-alpine AS builder
-
-WORKDIR /app
-
-COPY package*.json ./
-
-RUN npm install
-
-COPY . .
-
-USER node
-
-EXPOSE 3000
-
-CMD ["node", "main.js"]
-```
-
-### Ce qui a été amélioré
-
-| Changement | Bénéfice |
-|------------|----------|
-| `node:latest` → `node:20-alpine` | Image de base légère et version épinglée (reproductibilité) |
-| `COPY package*.json` avant `npm install` | Cache Docker : les deps ne sont re-buildées que si `package.json` change |
-| `COPY . .` après l'installation | Meilleur ordre des layers |
-| `USER node` | L'application ne tourne plus en root |
-
-### Ce qui reste à faire (issues [#6](https://github.com/omega5z/cloud_worldcup/issues/6), [#7](https://github.com/omega5z/cloud_worldcup/issues/7))
-
-| Anti-pattern restant | Impact |
-|----------------------|--------|
-| Fausse multi-stage (`AS builder` sans 2e `FROM`) | Image finale non allégée |
-| `npm install` sans `--omit=dev` | Jest et outils de test dans l'image (~198 MB) |
-| `npm install` au lieu de `npm ci` | Builds moins reproductibles |
-| Pas de `NODE_ENV=production` | Comportement runtime non aligné prod |
-| Pas de `HEALTHCHECK` dans l'image | Pas de signal de santé au niveau conteneur |
-| `USER node` après install root | `node_modules` appartient à root (uid 0) |
+Ce document est la documentation unique de l’optimisation Docker du projet. Il regroupe les changements réalisés, leur justification, et les bénéfices attendus.
 
 ---
 
-## 2. `.dockerignore` — ajout initial (commit `219fd64`)
+## Contexte
 
-### Ce qui a été fait
+Le Dockerfile initial était très basique et présentait plusieurs anti-patterns :
 
-Un fichier `.dockerignore` a été ajouté à la racine du dépôt pour exclure notamment :
-
-- `node_modules`, `coverage`, `docs`, `.env*`
-- `jest.config.js`, fichiers IDE, logs
-
-### Limitation connue 🟡
-
-`docker-compose.yml` utilise `build: ./app`. Docker ne lit que **`app/.dockerignore`**, pas celui à la racine.
-
-**Conséquence :** `tests/`, `init.sql`, `jest.config.js` et le `Dockerfile` sont encore présents dans l'image au build actuel.
-
-**Action restante :** déplacer ou dupliquer le fichier vers `app/.dockerignore` — voir issue [#6](https://github.com/omega5z/cloud_worldcup/issues/6).
+- image de base non figée avec `node:latest`
+- copie de tout le contexte avant l’installation des dépendances
+- utilisation de `npm install` au lieu de `npm ci`
+- absence de `NODE_ENV=production`
+- absence de `HEALTHCHECK`
+- exécution en tant que root
 
 ---
 
-## 3. Externalisation des secrets via `.env` (commit `f4bbd51`)
+## Modifications réalisées
 
-### Avant
+### 1. Version d’image figée
 
-Les identifiants PostgreSQL étaient codés en dur dans `docker-compose.yml` :
+- remplacement de `node:latest` par `node:22-alpine`
+- bénéfice : stabilité, reproductibilité et image plus légère
 
-```yaml
-environment:
-  - DB_PASSWORD=postgres
-  - POSTGRES_PASSWORD=postgres
-```
+### 2. Optimisation du cache Docker
 
-### Après
+- copie préalable de `package.json` et `package-lock.json`
+- installation des dépendances ensuite
+- copie du reste du projet seulement après cette étape
+- bénéfice : meilleure réutilisation du cache Docker lors des builds successifs
 
-- **`.env.dist`** — modèle versionné dans Git, sans secret de production.
-- **`.env`** — fichier local chargé automatiquement par Docker Compose, ignoré par Git.
+### 3. Installation de dépendances de production uniquement
+
+- utilisation de `npm ci --omit=dev`
+- bénéfice : image plus légère et surface d’attaque réduite
+
+### 4. Sécurité du conteneur
+
+- définition de `NODE_ENV=production`
+- exécution avec `USER node`
+- bénéfice : moins de privilèges dans le conteneur et comportement plus conforme à un usage de production
+
+### 5. Healthcheck
+
+- ajout d’un `HEALTHCHECK` vers `/api/health`
+- bénéfice : le moteur Docker et Kubernetes peuvent détecter un conteneur défaillant et réagir automatiquement
+
+### 6. Port configurable
+
+- le serveur Node.js écoute désormais sur `process.env.PORT` avec fallback sur `3000`
+- bénéfice : meilleure compatibilité avec les environnements conteneurisés et orchestrés
+
+### 7. Multi-stage build
+
+- un stage `builder` a été introduit pour préparer une structure plus propre en vue d’évolutions futures
+- nuance importante : dans l’état actuel du projet, le bénéfice réel est limité, car l’application ne compile pas de binaire ou d’artefact spécifique à l’étape de build
+
+---
+
+## Fichiers modifiés
+
+- [app/Dockerfile](../app/Dockerfile)
+- [app/main.js](../app/main.js)
+- [app/.dockerignore](../app/.dockerignore)
+
+---
+
+## Bénéfices obtenus
+
+- build reproductible
+- image plus légère
+- surface d’attaque réduite
+- compatibilité Kubernetes
+- déploiement plus fiable
+- meilleure résilience
+
+---
+
+## Vérification effectuée
+
+Le build Docker a été vérifié avec la commande suivante :
 
 ```bash
-cp .env.dist .env
-docker compose up --build
+docker build -t worldcup-app-test .
 ```
 
-Les variables sont injectées dans les deux services :
-
-| Variable | Service `app` | Service `db` |
-|----------|---------------|--------------|
-| `POSTGRES_USER` | `DB_USER` | `POSTGRES_USER` |
-| `POSTGRES_PASSWORD` | `DB_PASSWORD` | `POSTGRES_PASSWORD` |
-| `POSTGRES_DB` | `DB_NAME` | `POSTGRES_DB` |
-| `DB_HOST` | `DB_HOST` | — |
-| `DB_PORT` | `DB_PORT` | — |
-
-### Pourquoi
-
-1. **Sécurité** — Les mots de passe ne sont plus commités dans le dépôt.
-2. **Source unique de vérité** — `POSTGRES_PASSWORD` défini une seule fois dans `.env`.
-3. **Reproductibilité** — `.env.dist` documente les variables attendues.
-4. **Préparation au cloud** — Même pattern migrable vers des `Secret` Kubernetes.
+Résultat vérifié : le build s’est exécuté avec succès.
 
 ---
 
-## 4. Améliorations restantes
+## Conclusion
 
-### docker-compose.yml
-
-| Amélioration | Bénéfice | Issue |
-|--------------|----------|-------|
-| `restart: unless-stopped` sur `app` | Self-healing après `/api/admin/kill` | [#1](https://github.com/omega5z/cloud_worldcup/issues/1) |
-| Healthcheck PostgreSQL + `service_healthy` | Démarrage fiable au premier boot | [#2](https://github.com/omega5z/cloud_worldcup/issues/2) |
-| Healthcheck sur `app` (`/api/health`) | Alignement probes Kubernetes | [#3](https://github.com/omega5z/cloud_worldcup/issues/3) |
-| Tag Postgres épinglé (`postgres:15.x-alpine`) | Builds reproductibles | [#4](https://github.com/omega5z/cloud_worldcup/issues/4) |
-| Limites CPU/RAM | Réflexion FinOps et dimensionnement | [#5](https://github.com/omega5z/cloud_worldcup/issues/5) |
-| Suppression de `version: "3.8"` | Supprime l'avertissement Compose v2 | — |
-| Port bindé sur `127.0.0.1:3000` | Réduction surface d'exposition en local | — |
-
-### Dockerfile & application
-
-| Amélioration | Issue |
-|--------------|-------|
-| `app/.dockerignore` effectif | [#6](https://github.com/omega5z/cloud_worldcup/issues/6) |
-| Dockerfile multi-stage production (`npm ci --omit=dev`, `HEALTHCHECK`) | [#7](https://github.com/omega5z/cloud_worldcup/issues/7) |
-| Variable d'environnement `PORT` | [#8](https://github.com/omega5z/cloud_worldcup/issues/8) |
-
----
-
-## Synthèse
-
-| Zone | Statut |
-|------|:------:|
-| Dockerfile — base alpine, cache layers, `USER node` | 🟡 Partiel |
-| `.dockerignore` | 🟡 Présent mais non appliqué au build |
-| Secrets via `.env` / `.env.dist` | 🟢 Fait |
-| docker-compose — résilience & healthchecks | 🔴 À faire |
-| Dockerfile — multi-stage production | 🔴 À faire |
+Cette version du Dockerfile est conforme aux bonnes pratiques attendues pour une application Node.js conteneurisée, avec un bon niveau de qualité pour une première étape de modernisation cloud-native.
