@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: worldcup-app
+  namespace: worldcup
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: worldcup-app
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
