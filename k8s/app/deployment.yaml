@@ -32,7 +32,7 @@ spec:
         - name: ghcr-credentials
       containers:
         - name: app
-          image: ghcr.io/xeaphones/worldcup-app:v1.0.1
+          image: ghcr.io/omega5z/cloud_worldcup:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
