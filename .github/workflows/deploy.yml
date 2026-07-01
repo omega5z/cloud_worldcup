@@ -170,33 +170,34 @@ jobs:
       - name: Configure kubeconfig
         env:
           KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
-          K8S_API_SERVER: ${{ secrets.K8S_API_SERVER }}
+          KUBE_SERVER: ${{ secrets.KUBE_SERVER }}
+          KUBE_TOKEN: ${{ secrets.KUBE_TOKEN }}
           K8S_CA_PEM_B64: ${{ secrets.K8S_CA_PEM_B64 }}
+          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
         run: |
           mkdir -p "$HOME/.kube"
-          echo "$KUBE_CONFIG_B64" | base64 --decode > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
-
-          cluster_name="$(kubectl config view -o jsonpath='{.clusters[0].name}')"
-
-          if [ -n "$K8S_API_SERVER" ]; then
-            kubectl config set-cluster "$cluster_name" --server="$K8S_API_SERVER"
-          fi
-
           if [ -n "$K8S_CA_PEM_B64" ]; then
             echo "$K8S_CA_PEM_B64" | base64 --decode > "$HOME/.kube/cluster-ca.crt"
-            kubectl config set-cluster "$cluster_name" --certificate-authority="$HOME/.kube/cluster-ca.crt" --embed-certs=true
           fi
+
+          if [ -n "$KUBE_SERVER" ] && [ -n "$KUBE_TOKEN" ] && [ -f "$HOME/.kube/cluster-ca.crt" ]; then
+            kubectl config set-cluster ci-cluster --server="$KUBE_SERVER" --certificate-authority="$HOME/.kube/cluster-ca.crt" --embed-certs=true
+            kubectl config set-credentials ci-deployer --token="$KUBE_TOKEN"
+            kubectl config set-context ci --cluster=ci-cluster --user=ci-deployer --namespace="${K8S_NAMESPACE:-default}"
+            kubectl config use-context ci
+          elif [ -n "$KUBE_CONFIG_B64" ]; then
+            echo "$KUBE_CONFIG_B64" | base64 --decode > "$HOME/.kube/config"
+          else
+            echo "Missing Kubernetes authentication. Provide KUBE_SERVER, KUBE_TOKEN, K8S_CA_PEM_B64 or fallback KUBE_CONFIG_B64."
+            exit 1
+          fi
+
+          chmod 600 "$HOME/.kube/config"
 
       - name: Verify cluster connectivity
         run: |
           kubectl version --client
-          if ! kubectl cluster-info; then
-            echo "cluster-info failed (likely TLS trust mismatch). Falling back to insecure-skip-tls-verify."
-            cluster_name="$(kubectl config view -o jsonpath='{.clusters[0].name}')"
-            kubectl config set-cluster "$cluster_name" --insecure-skip-tls-verify=true
-            kubectl cluster-info
-          fi
+          kubectl cluster-info
 
       - name: Deploy new image (rolling update)
         env:
