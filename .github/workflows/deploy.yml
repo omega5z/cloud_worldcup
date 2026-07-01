@@ -183,7 +183,7 @@ jobs:
 
       - name: Verify cluster connectivity
         run: |
-          kubectl version --short
+          kubectl version --client
           kubectl cluster-info
 
       - name: Deploy new image (rolling update)
