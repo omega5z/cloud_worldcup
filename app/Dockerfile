@@ -12,6 +12,15 @@ COPY --from=builder --chown=node:node /build/node_modules ./node_modules
 COPY --chown=node:node main.js ./
 COPY --chown=node:node public/ ./public/
 
+# Runtime image does not need npm/corepack. Removing them reduces image surface
+# and avoids CVEs from toolchain packages not used at runtime.
+RUN rm -rf \
+  /usr/local/lib/node_modules/npm \
+  /usr/local/lib/node_modules/corepack \
+  /usr/local/bin/npm \
+  /usr/local/bin/npx \
+  /usr/local/bin/corepack
+
 USER node
 
 ENV PORT=3000
