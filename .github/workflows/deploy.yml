@@ -159,10 +159,21 @@ jobs:
       - name: Configure kubeconfig
         env:
           KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+          K8S_API_SERVER: ${{ secrets.K8S_API_SERVER }}
         run: |
           mkdir -p "$HOME/.kube"
           echo "$KUBE_CONFIG_B64" | base64 --decode > "$HOME/.kube/config"
           chmod 600 "$HOME/.kube/config"
+
+          if [ -n "$K8S_API_SERVER" ]; then
+            cluster_name="$(kubectl config view -o jsonpath='{.clusters[0].name}')"
+            kubectl config set-cluster "$cluster_name" --server="$K8S_API_SERVER"
+          fi
+
+      - name: Verify cluster connectivity
+        run: |
+          kubectl version --short
+          kubectl cluster-info
 
       - name: Deploy new image (rolling update)
         env:
