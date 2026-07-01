@@ -103,7 +103,9 @@ jobs:
           K8S_IMAGE_REPO: ${{ vars.K8S_IMAGE_REPO }}
         run: |
           if [ -n "$K8S_IMAGE_REPO" ]; then
-            echo "IMAGE_REPO=$K8S_IMAGE_REPO" >> "$GITHUB_ENV"
+            image_repo="$K8S_IMAGE_REPO"
+            image_repo="${image_repo#${REGISTRY}/}"
+            echo "IMAGE_REPO=$image_repo" >> "$GITHUB_ENV"
           else
             echo "IMAGE_REPO=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
           fi
