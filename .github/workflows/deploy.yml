@@ -64,14 +64,15 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:scan-${{ github.sha }}
 
       - name: Run Trivy scan (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.24.0
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:scan-${{ github.sha }}
-          format: table
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-          exit-code: '1'
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            --no-progress \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:scan-${{ github.sha }}
 
       - name: Remove local scan image
         run: docker image rm ${{ env.REGISTRY }}/${{ env.IMAGE_REPO }}:scan-${{ github.sha }} || true
