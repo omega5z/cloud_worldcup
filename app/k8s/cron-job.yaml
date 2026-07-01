@@ -1,0 +1,40 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: worldcup-standings-cronjob
+  namespace: worldcup # Assurez-vous que ce namespace existe ou adaptez-le
+spec:
+  # Exécution toutes les 30 minutes
+  schedule: "*/30 * * * *" 
+  # Empêche Kubernetes de lancer un deuxième Job si le précédent a mis du retard
+  concurrencyPolicy: Forbid 
+  # Nombre de Pods terminés à garder en historique pour consulter les logs
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: standings-job
+        spec:
+          containers:
+          - name: standings-worker
+            # Utilisez le tag de votre image buildée et poussée sur votre registre
+            image: omega5z/worldcup-app:latest 
+            # On spécifie la commande exacte pour lancer le script
+            command: ["node", "jobs/jobs-standind.js"] 
+            # Injection des variables d'environnement pour se connecter au Postgres de K8s
+            env:
+            - name: DB_HOST
+              value: "capstone-dplc-student-db-1" # Le nom du Service Kubernetes de votre Postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: "worldcup2026"
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_PASSWORD
+              value: "postgres" # Idéalement, utilisez un Secret K8s ici plus tard
+          # Si le script crash, K8s recrée un pod pour réessayer (OnFailure)
+          restartPolicy: OnFailure
