@@ -190,9 +190,15 @@ jobs:
           chmod 600 "$HOME/.kube/config"
 
       - name: Verify cluster connectivity
+        env:
+          K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
+          K8S_DEPLOYMENT: ${{ vars.K8S_DEPLOYMENT }}
         run: |
           kubectl version --client
-          kubectl cluster-info
+          test -n "$K8S_NAMESPACE" || (echo "Missing repo variable: K8S_NAMESPACE" && exit 1)
+          test -n "$K8S_DEPLOYMENT" || (echo "Missing repo variable: K8S_DEPLOYMENT" && exit 1)
+          kubectl auth can-i get deployments.apps -n "$K8S_NAMESPACE"
+          kubectl -n "$K8S_NAMESPACE" get deployment "$K8S_DEPLOYMENT" -o name
 
       - name: Deploy new image (rolling update)
         env:
