@@ -411,10 +411,10 @@ app.post('/api/data', async (req, res) => {
 // Démarrage du serveur
 // ============================================================
 
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT, 10) || 3000;
 
 if (require.main === module) {
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
   });
 }
