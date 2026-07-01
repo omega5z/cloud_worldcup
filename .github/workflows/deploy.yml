@@ -171,8 +171,6 @@ jobs:
         env:
           KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
           K8S_API_SERVER: ${{ secrets.K8S_API_SERVER }}
-          K8S_CA_PEM_B64: ${{ secrets.K8S_CA_PEM_B64 }}
-          K8S_INSECURE_SKIP_TLS_VERIFY: ${{ vars.K8S_INSECURE_SKIP_TLS_VERIFY }}
         run: |
           mkdir -p "$HOME/.kube"
           echo "$KUBE_CONFIG_B64" | base64 --decode > "$HOME/.kube/config"
@@ -182,13 +180,6 @@ jobs:
 
           if [ -n "$K8S_API_SERVER" ]; then
             kubectl config set-cluster "$cluster_name" --server="$K8S_API_SERVER"
-          fi
-
-          if [ -n "$K8S_CA_PEM_B64" ]; then
-            echo "$K8S_CA_PEM_B64" | base64 --decode > "$HOME/.kube/cluster-ca.crt"
-            kubectl config set-cluster "$cluster_name" --certificate-authority="$HOME/.kube/cluster-ca.crt" --embed-certs=true
-          elif [ "$K8S_INSECURE_SKIP_TLS_VERIFY" = "true" ]; then
-            kubectl config set-cluster "$cluster_name" --insecure-skip-tls-verify=true
           fi
 
       - name: Verify cluster connectivity
