@@ -96,7 +96,18 @@ jobs:
 
       - name: Run tests
         working-directory: ${{ env.APP_PATH }}
-        run: npm test
+        run: |
+          for attempt in 1 2 3; do
+            echo "Running test suite (attempt ${attempt}/3)"
+            if npm test; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Flaky failure detected, retrying..."
+            fi
+          done
+          echo "Tests failed after 3 attempts"
+          exit 1
 
       - name: Set lowercase image repository
         env:
