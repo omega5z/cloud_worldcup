@@ -232,30 +232,6 @@ Résultat attendu du health check : `{"status":"ok"}`.
 ---
 
 
-
-## Reste à faire (hors Dockerfile)
-
-Ces points sont suivis via les issues GitHub et concernent `docker-compose.yml`, pas le Dockerfile :
-
-
-| Issue                                                    | Sujet                                                | État |
-| -------------------------------------------------------- | ---------------------------------------------------- | ---- |
-| [#1](https://github.com/omega5z/cloud_worldcup/issues/1) | `restart: unless-stopped` sur `app`                  | 🔴   |
-| [#2](https://github.com/omega5z/cloud_worldcup/issues/2) | Healthcheck Postgres + `depends_on: service_healthy` | 🔴   |
-| [#3](https://github.com/omega5z/cloud_worldcup/issues/3) | Healthcheck Compose sur `app`                        | 🔴   |
-| [#4](https://github.com/omega5z/cloud_worldcup/issues/4) | Épingler l'image Postgres (`postgres:15.x-alpine`)   | 🔴   |
-| [#5](https://github.com/omega5z/cloud_worldcup/issues/5) | Limites CPU / RAM (FinOps)                           | 🔴   |
-| [#6](https://github.com/omega5z/cloud_worldcup/issues/6) | `app/.dockerignore`                                  | 🟢   |
-| [#7](https://github.com/omega5z/cloud_worldcup/issues/7) | Dockerfile production-ready                          | 🟢   |
-| [#8](https://github.com/omega5z/cloud_worldcup/issues/8) | Variable `PORT`                                      | 🟢   |
-
-
----
-
-
-
 ## Conclusion
 
 Le Dockerfile est désormais conforme aux bonnes pratiques de conteneurisation pour une application Node.js en production : multi-stage réel, dépendances figées, copie minimale, utilisateur non-root, healthcheck et port configurable.
-
-La prochaine étape naturelle est de durcir `docker-compose.yml` (healthchecks, restart, limites ressources) pour aligner le comportement local sur ce qu'attend un déploiement Kubernetes.

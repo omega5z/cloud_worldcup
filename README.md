@@ -1,32 +1,86 @@
-# 🏆 Capstone — Coupe du Monde 2026 : Déploiement Cloud
+# Coupe du Monde 2026 — Déploiement Cloud-Native
 
-## Le Scénario
+Application Node.js + PostgreSQL pour suivre la Coupe du Monde 2026, déployée sur un cluster **k3s** multi-nœuds (homelab Proxmox) avec auto-scaling, haute disponibilité, observabilité et pipeline CI/CD.
 
-En vue de la nouvelle Coupe de Monde, la FIFA a missionner votre entreprise pour moderniser son site internet utilisé pour suivre les résultats sportif du championnat et de l’héberger dans une solution Cloud ou Cloud-Native capable de s’adapter à la charge.
-
-Votre équipe a été choisit pour:
-- Déployer une application Node.js + PostgreSQL sur le cloud
-- Démontrer la haute disponibilité, l’élasticité, la résilience et en  l’observabilité de la platforme dans sa version modernisée.
-
-Vous présenterez votre solution lors d’une soutenance de 40 minutes
-
-> **Votre mission :** Migrer, moderniser et sécuriser cette application pour la rendre hautement disponible, résiliente, scalable et industrialisée. Vous avez carte blanche sur les choix d'architecture, mais le temps presse : **vous avez 2,5 jours avant la mise en production officielle (le crash-test en soutenance de 40 minutes).**
+**Dépôt :** [github.com/omega5z/cloud_worldcup](https://github.com/omega5z/cloud_worldcup)
 
 ---
 
-## Démarrage rapide
+## Accès production
+
+| Service | URL |
+|---------|-----|
+| Application (public) | https://worldcup.yohanvelay.nybtech.fr |
+| Application (LAN) | https://worldcup.internal.nybtech.fr |
+| Métriques Prometheus | https://worldcup.yohanvelay.nybtech.fr/metrics |
+| Grafana | https://grafana-worldcup.internal.nybtech.fr |
+| Image Docker | `ghcr.io/omega5z/cloud_worldcup:latest` |
+
+---
+
+## Architecture
+
+```
+Internet / LAN
+      │
+      ▼
+┌─────────────┐
+│    Caddy    │  TLS (Let's Encrypt) · CT 100 (interne) / CT 102 (public)
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐     ┌──────────────────────────────────┐
+│  Service    │────▶│  Deployment app (2–6 replicas)     │
+│  ClusterIP  │     │  HPA · probes · anti-affinité      │
+└─────────────┘     └──────────────┬───────────────────┘
+                                   │
+                    ┌──────────────┼──────────────┐
+                    ▼              ▼              ▼
+            ┌─────────────┐  ┌──────────┐  ┌─────────────┐
+            │ CNPG Postgres│  │ CronJob  │  │ Prometheus  │
+            │ 3 instances  │  │ standings│  │ + Grafana   │
+            └─────────────┘  └──────────┘  └─────────────┘
+```
+
+**Infrastructure :** VM `worldcup-k8s` (Proxmox) · k3s multi-nœuds · CloudNative-PG · exposition via Caddy · monitoring `kube-prometheus-stack`.
+
+---
+
+## Fonctionnalités
+
+| Domaine | Implémentation |
+|---------|----------------|
+| **Conteneurisation** | Dockerfile multi-stage (`node:22-alpine`), `npm ci --omit=dev`, utilisateur non-root, `HEALTHCHECK` |
+| **Orchestration** | Namespace `worldcup`, Deployment 2 réplicas, HPA CPU 60 % (2–6 pods), probes startup/liveness/readiness |
+| **Base de données** | Cluster PostgreSQL CNPG (3 instances, anti-affinité, `local-path`) |
+| **Résilience** | Self-healing K8s, `POST /api/admin/kill` pour crash-test, rolling updates |
+| **Élasticité** | HPA + tests de charge [kube-burner](kube-burner/) |
+| **Observabilité** | Métriques `prom-client`, ServiceMonitor, dashboard Grafana, alertes Prometheus |
+| **Industrialisation** | GitHub Actions : tests, scan Trivy, build GHCR, déploiement kubectl |
+| **Job créatif** | CronJob toutes les 30 min — calcul et snapshot des classements |
+
+---
+
+## Démarrage rapide (local)
 
 ```bash
-# 1. Cloner le dépôt
-git clone <url-du-depot>
-cd capstone-dplc
+git clone git@github.com:omega5z/cloud_worldcup.git
+cd cloud_worldcup
 
-# 2. Lancer en local
-docker-compose up --build
+cp .env.dist .env
+docker compose up --build
+```
 
-# 3. Vérifier
-curl http://localhost:3000/          # → {"status":"ok"}
-curl http://localhost:3000/metrics   # → métriques Prometheus
+```bash
+curl http://localhost:3000/api/health          # {"status":"ok"}
+curl http://localhost:3000/api/health/db       # vérifie PostgreSQL
+curl http://localhost:3000/metrics             # métriques Prometheus
+```
+
+### Tests
+
+```bash
+cd app && npm ci && npm test
 ```
 
 ---
@@ -34,89 +88,90 @@ curl http://localhost:3000/metrics   # → métriques Prometheus
 ## Structure du projet
 
 ```
-capstone-dplc/
-├── app/                    # Code source de l'application (Node.js)
-│   ├── main.js             # Application Express
-│   ├── Dockerfile          # Dockerfile à optimiser !
-│   ├── init.sql            # Script d'initialisation PostgreSQL
-│   ├── package.json        # Dépendances
-│   └── tests/              # Tests property-based
-├── docs/
-│   └── GUIDE-ETUDIANT.md  # Guide technique (routes API, variables, conseils)
-├── docker-compose.yml      # Orchestration locale
-└── README.md               # Ce fichier
+cloud_worldcup/
+├── app/                        # Application Node.js (Express)
+│   ├── main.js                 # API REST, métriques, health checks
+│   ├── services/standing.js    # Logique de classement
+│   ├── jobs/jobs-standind.js   # Job CronJob (snapshot standings)
+│   ├── public/                 # Frontend statique
+│   ├── init.sql                # Schéma et données initiales
+│   ├── Dockerfile              # Image optimisée multi-stage
+│   └── tests/                  # Tests property-based (Jest + fast-check)
+├── k8s/                        # Manifestes Kubernetes
+│   ├── app/                    # Deployment, Service, HPA
+│   ├── postgres/               # Cluster CNPG + init ConfigMap
+│   ├── monitoring/             # ServiceMonitor, règles, dashboard Grafana
+│   └── cron-job.yaml           # CronJob classements
+├── kube-burner/                # Scénarios de charge (HPA, users)
+├── scripts/kube-burner.sh      # Wrapper local pour kube-burner
+├── .github/workflows/deploy.yml # CI/CD (test → scan → build → deploy)
+├── docker-compose.yml          # Environnement local
+└── docs/                       # Guides détaillés (voir ci-dessous)
 ```
 
 ---
 
-## Vos missions
+## Déploiement Kubernetes
 
-### 1. Optimiser le Dockerfile
+Le déploiement cible un cluster **k3s** sur homelab Proxmox. Les manifestes sont dans `k8s/`.
 
-Le Dockerfile fourni est volontairement mauvais. Vous devez le réécrire selon les bonnes pratiques professionnelles (image légère, sécurité, performance de build). Il y a 5 anti-patterns.
+```bash
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/configmap.yaml
+# Secrets : db-credentials, ghcr-credentials, postgres-cnpg-auth (hors Git)
+kubectl apply -f k8s/postgres/
+kubectl apply -f k8s/app/
+kubectl apply -f k8s/cron-job.yaml
+kubectl apply -f k8s/monitoring/
+```
 
-### 2. Déployer sur le cloud
+Guide complet : [docs/GUIDE-DEPLOIEMENT-HOMELAB.md](docs/GUIDE-DEPLOIEMENT-HOMELAB.md)
 
-Choisissez **une** des deux approches :
-
-| Option A — AWS (Cloud Managé) | Option B — Kubernetes (Cloud Agnostique) |
-|-------------------------------|------------------------------------------|
-| VPC multi-AZ, Load Balancer, Compute auto-scalé, Base de données managée | Deployment avec auto-scaling, Ingress, Probes, Base de données persistante |
-| Observabilité via CloudWatch | Observabilité via Prometheus + Grafana |
-
-### 3. Répondre aux challenges techniques
-
-| Challenge | Objectif |
-|-----------|----------|
-| **Industrialisation** | Déploiement reproductible (IaC ou Runbook rigoureux) |
-| **Mur de charge** | Votre infra doit absorber un pic de trafic sans s'effondrer |
-| **Bouton rouge** | L'application doit se rétablir automatiquement après un crash |
-| **FinOps** | Justifier le dimensionnement et estimer le coût mensuel |
-
-### 4. Job créatif (bonus)
-
-Concevez un Job qui lit les données sportives en base et produit un résultat exploitable de votre choix (stats, classement, rapport, notification…).
+Variante VPS cloud : [docs/GUIDE-DEPLOIEMENT-K8S-VPS.md](docs/GUIDE-DEPLOIEMENT-K8S-VPS.md)
 
 ---
 
-## Livrables attendus
+## CI/CD
 
-1. **Infrastructure** — Fichiers IaC (Terraform, Helm, CloudFormation…) ou `RUNBOOK.md` reproductible
-2. **Dockerfile optimisé** — Selon les bonnes pratiques de conteneurisation
-3. **Schéma d'architecture** — Diagramme technique clair et légendé
-4. **README.md de votre dépôt** — URL publique d'accès + accès métriques/dashboards
+Le workflow [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) s'exécute sur chaque push vers `main` :
 
----
+1. `npm test` (avec retry sur flaky tests)
+2. Scan Trivy (fail on HIGH/CRITICAL)
+3. Build et push vers GHCR (`:latest` + `:${{ github.sha }}`)
+4. Rolling update du Deployment via `kubectl set image`
 
-## Soutenance (35 min)
-
-La soutenance est une **revue d'ingénierie en direct** — pas de PowerPoint.
-
-| Phase | Durée | Contenu |
-|-------|-------|---------|
-| Architecture & Pitch | 10 min | Présentation du diagramme, justification des choix techniques, stratégie budgétaire |
-| Démo en direct | 10 min | Preuve que l'infra fonctionne (CI/CD ou exécution du Runbook) |
-| Crash Test du jury | 15 min | Tests automatisés pilotés par l'enseignant sur votre infrastructure |
+**Secrets / variables GitHub requis :** `KUBE_SERVER`, `KUBE_TOKEN` (ou `KUBE_CONFIG_B64`), `K8S_NAMESPACE`, `K8S_DEPLOYMENT`, `K8S_CONTAINER`.
 
 ---
 
-## Grille d'évaluation (sur 20 points)
+## Tests de charge
 
-| Critère | Points |
-|---------|:------:|
-| **Soutenance & Maîtrise technique orale** — Clarté, profondeur technique, réponses aux questions | **6** |
-| **Choix architecturaux & Design** — Pertinence, reproductibilité, sécurité | **5** |
-| **Élasticité & Auto-scaling** — Réaction autonome face à la charge | **4** |
-| **Résilience & Self-Healing** — Rétablissement automatique après panne | **3** |
-| **Observabilité & FinOps** — Dashboard opérationnel + estimation de coût chiffrée | **2** |
-| **Total** | **20** |
-
-**Bonus** (+2 pts max, plafond à 20) : Job créatif (+1) | CI/CD ou GitOps démontré (+1)
-
-> La soutenance orale et la maîtrise technique représentent le plus gros coefficient. Comprendre et défendre vos choix compte autant que les avoir implémentés.
+```bash
+./scripts/kube-burner.sh install    # installe kube-burner localement
+./scripts/kube-burner.sh hpa        # charge CPU → déclenche le HPA
+./scripts/kube-burner.sh users      # charge HTTP sur l'API
+./scripts/kube-burner.sh cleanup    # nettoie les ressources de test
+```
 
 ---
 
 ## Documentation
 
-Consultez le [Guide Étudiant](docs/GUIDE-ETUDIANT.md) pour les détails techniques : routes API, variables d'environnement, exemples de requêtes, et conseils.
+| Guide | Contenu |
+|-------|---------|
+| [GUIDE-ETUDIANT.md](docs/GUIDE-ETUDIANT.md) | Routes API, variables d'environnement, exemples curl |
+| [GUIDE-DEPLOIEMENT-HOMELAB.md](docs/GUIDE-DEPLOIEMENT-HOMELAB.md) | Déploiement k3s sur homelab Proxmox + Caddy |
+| [GUIDE-DEPLOIEMENT-K8S-VPS.md](docs/GUIDE-DEPLOIEMENT-K8S-VPS.md) | Variante déploiement sur VPS |
+| [GUIDE-K3S-MULTI-NODE-PROXMOX.md](docs/GUIDE-K3S-MULTI-NODE-PROXMOX.md) | Cluster k3s multi-nœuds |
+| [GUIDE-POSTGRES-CNPG-HOMELAB.md](docs/GUIDE-POSTGRES-CNPG-HOMELAB.md) | PostgreSQL CloudNative-PG |
+| [GUIDE-PROMETHEUS-GRAFANA-WORLDCUP.md](docs/GUIDE-PROMETHEUS-GRAFANA-WORLDCUP.md) | Stack monitoring |
+| [GUIDE-ALERTES-WORLDCUP.md](docs/GUIDE-ALERTES-WORLDCUP.md) | Alertes Prometheus / Alertmanager |
+| [GUIDE-BESZEL-RYBBIT-WORLDCUP.md](docs/GUIDE-BESZEL-RYBBIT-WORLDCUP.md) | Monitoring hôte + analytics web |
+| [OPTIMISATION.md](docs/OPTIMISATION.md) | Optimisation Dockerfile (avant/après) |
+| [AUDIT_ARCHITECTURE.md](docs/AUDIT_ARCHITECTURE.md) | Audit technique de l'existant |
+
+---
+
+## Contexte
+
+Projet capstone Ynov — migration et modernisation d'une application monolithique vers une plateforme cloud-native capable d'absorber les pics de trafic d'une Coupe du Monde, avec démonstration de haute disponibilité, élasticité, résilience et observabilité.
