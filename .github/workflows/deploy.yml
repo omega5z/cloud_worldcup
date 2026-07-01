@@ -172,23 +172,18 @@ jobs:
           KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
           KUBE_SERVER: ${{ secrets.KUBE_SERVER }}
           KUBE_TOKEN: ${{ secrets.KUBE_TOKEN }}
-          K8S_CA_PEM_B64: ${{ secrets.K8S_CA_PEM_B64 }}
           K8S_NAMESPACE: ${{ vars.K8S_NAMESPACE }}
         run: |
           mkdir -p "$HOME/.kube"
-          if [ -n "$K8S_CA_PEM_B64" ]; then
-            echo "$K8S_CA_PEM_B64" | base64 --decode > "$HOME/.kube/cluster-ca.crt"
-          fi
-
-          if [ -n "$KUBE_SERVER" ] && [ -n "$KUBE_TOKEN" ] && [ -f "$HOME/.kube/cluster-ca.crt" ]; then
-            kubectl config set-cluster ci-cluster --server="$KUBE_SERVER" --certificate-authority="$HOME/.kube/cluster-ca.crt" --embed-certs=true
+          if [ -n "$KUBE_SERVER" ] && [ -n "$KUBE_TOKEN" ]; then
+            kubectl config set-cluster ci-cluster --server="$KUBE_SERVER" --insecure-skip-tls-verify=true
             kubectl config set-credentials ci-deployer --token="$KUBE_TOKEN"
             kubectl config set-context ci --cluster=ci-cluster --user=ci-deployer --namespace="${K8S_NAMESPACE:-default}"
             kubectl config use-context ci
           elif [ -n "$KUBE_CONFIG_B64" ]; then
             echo "$KUBE_CONFIG_B64" | base64 --decode > "$HOME/.kube/config"
           else
-            echo "Missing Kubernetes authentication. Provide KUBE_SERVER, KUBE_TOKEN, K8S_CA_PEM_B64 or fallback KUBE_CONFIG_B64."
+            echo "Missing Kubernetes authentication. Provide KUBE_SERVER and KUBE_TOKEN or fallback KUBE_CONFIG_B64."
             exit 1
           fi
 
