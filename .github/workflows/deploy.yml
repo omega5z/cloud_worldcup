@@ -176,8 +176,9 @@ jobs:
           echo "$KUBE_CONFIG_B64" | base64 --decode > "$HOME/.kube/config"
           chmod 600 "$HOME/.kube/config"
 
+          cluster_name="$(kubectl config view -o jsonpath='{.clusters[0].name}')"
+
           if [ -n "$K8S_API_SERVER" ]; then
-            cluster_name="$(kubectl config view -o jsonpath='{.clusters[0].name}')"
             kubectl config set-cluster "$cluster_name" --server="$K8S_API_SERVER"
           fi
 
