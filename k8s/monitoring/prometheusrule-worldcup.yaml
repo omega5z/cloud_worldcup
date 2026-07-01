@@ -1,0 +1,170 @@
+# Worldcup-specific Prometheus alerts — picked up by kube-prometheus-stack
+# when label release matches the Helm release name (default: monitoring).
+#
+# Apply:
+#   kubectl apply -f k8s/monitoring/prometheusrule-worldcup.yaml
+#
+# Verify in Prometheus UI → Alerts (port-forward svc/monitoring-kube-prometheus-prometheus -n monitoring 9090:9090)
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: worldcup-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring
+    app: worldcup
+spec:
+  groups:
+    - name: worldcup.app
+      rules:
+        - alert: WorldcupAppMetricsTargetDown
+          expr: |
+            count(up{job=~"worldcup/worldcup-app.*"} == 1) == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: worldcup
+          annotations:
+            summary: "Worldcup app /metrics scrape target is down"
+            description: "Prometheus cannot scrape any worldcup-app target for 2 minutes. Check pods, ServiceMonitor, and Service port name `http`."
+
+        - alert: WorldcupAppReplicasUnavailable
+          expr: |
+            kube_deployment_status_replicas_available{namespace="worldcup", deployment="app"}
+            < kube_deployment_spec_replicas{namespace="worldcup", deployment="app"}
+          for: 3m
+          labels:
+            severity: critical
+            team: worldcup
+          annotations:
+            summary: "Worldcup app has unavailable replicas"
+            description: "Deployment `app` in namespace `worldcup` has fewer available replicas than desired for 3 minutes."
+
+        - alert: WorldcupAppHigh5xxRate
+          expr: |
+            (
+              sum(rate(http_requests_total{job=~"worldcup/worldcup-app.*", status_code=~"5.."}[5m]))
+              /
+              sum(rate(http_requests_total{job=~"worldcup/worldcup-app.*"}[5m]))
+            ) > 0.10
+          for: 5m
+          labels:
+            severity: warning
+            team: worldcup
+          annotations:
+            summary: "Worldcup app 5xx error rate above 10%"
+            description: "More than 10% of HTTP responses are 5xx over the last 5 minutes. Check app logs and PostgreSQL connectivity."
+
+        - alert: WorldcupAppHighLatencyP95
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum(rate(http_request_duration_seconds_bucket{job=~"worldcup/worldcup-app.*", route!="/api/compute"}[5m])) by (le)
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            team: worldcup
+          annotations:
+            summary: "Worldcup app p95 latency above 500ms"
+            description: "95th percentile latency (excluding /api/compute demo route) exceeds 500ms for 5 minutes."
+
+        - alert: WorldcupAppMemoryNearLimit
+          expr: |
+            (
+              container_memory_working_set_bytes{namespace="worldcup", container="app"}
+              /
+              container_spec_memory_limit_bytes{namespace="worldcup", container="app"}
+            ) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            team: worldcup
+          annotations:
+            summary: "Worldcup app pod memory above 85% of limit"
+            description: "Pod {{ $labels.pod }} is using more than 85% of its 256Mi memory limit. Risk of OOMKill."
+
+        - alert: WorldcupHpaAtMaxReplicas
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="worldcup", horizontalpodautoscaler="app-hpa"}
+            >=
+            kube_horizontalpodautoscaler_spec_max_replicas{namespace="worldcup", horizontalpodautoscaler="app-hpa"}
+          for: 10m
+          labels:
+            severity: warning
+            team: worldcup
+          annotations:
+            summary: "Worldcup HPA at max replicas for 10 minutes"
+            description: "HPA `app-hpa` has been at maxReplicas (6) for 10 minutes. Consider raising limits or investigating sustained load."
+
+    - name: worldcup.postgres
+      rules:
+        - alert: WorldcupPostgresReplicasLow
+          expr: |
+            count(kube_pod_status_ready{namespace="worldcup", pod=~"postgres-.*", condition="true"} == 1) < 2
+          for: 5m
+          labels:
+            severity: critical
+            team: worldcup
+          annotations:
+            summary: "Worldcup PostgreSQL cluster below 2 ready pods"
+            description: "Fewer than 2 CNPG postgres pods are Ready in namespace `worldcup`. Database availability is at risk."
+
+        - alert: WorldcupPostgresMemoryPressure
+          expr: |
+            (
+              container_memory_working_set_bytes{namespace="worldcup", pod=~"postgres-.*", container="postgres"}
+              /
+              container_spec_memory_limit_bytes{namespace="worldcup", pod=~"postgres-.*", container="postgres"}
+            ) > 0.90
+          for: 5m
+          labels:
+            severity: warning
+            team: worldcup
+          annotations:
+            summary: "PostgreSQL pod memory above 90% of limit"
+            description: "Pod {{ $labels.pod }} is near its 768Mi memory limit."
+
+    - name: worldcup.node
+      rules:
+        - alert: WorldcupNodeMemoryHigh
+          expr: |
+            (
+              1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+            ) > 0.88
+          for: 5m
+          labels:
+            severity: warning
+            team: worldcup
+          annotations:
+            summary: "VM worldcup-k8s memory usage above 88%"
+            description: "Node memory usage is high on VM 111 (8 GiB). Risk of swap/OOM for k3s workloads."
+
+        - alert: WorldcupNodeDiskSpaceLow
+          expr: |
+            (
+              node_filesystem_avail_bytes{mountpoint="/", fstype!="rootfs"}
+              /
+              node_filesystem_size_bytes{mountpoint="/", fstype!="rootfs"}
+            ) < 0.15
+          for: 10m
+          labels:
+            severity: warning
+            team: worldcup
+          annotations:
+            summary: "VM worldcup-k8s root disk below 15% free"
+            description: "Root filesystem free space is below 15%. CNPG PVCs and container images may fill the disk."
+
+        - alert: WorldcupNodeCpuHigh
+          expr: |
+            (
+              1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))
+            ) > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            team: worldcup
+          annotations:
+            summary: "VM worldcup-k8s CPU above 85%"
+            description: "Sustained high CPU on the k3s node for 10 minutes. Check HPA load tests or runaway pods."

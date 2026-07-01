@@ -153,3 +153,25 @@ INSERT INTO matches (team_home_id, team_away_id, score_home, score_away, stage, 
 ((SELECT id FROM teams WHERE name = 'England'), (SELECT id FROM teams WHERE name = 'Croatia'), 4, 2, 'Group Stage', '2026-06-17'),
 ((SELECT id FROM teams WHERE name = 'Ghana'), (SELECT id FROM teams WHERE name = 'Panama'), 1, 0, 'Group Stage', '2026-06-17')
 ON CONFLICT DO NOTHING;
+
+
+CREATE TABLE IF NOT EXISTS standings_snapshot (
+    id SERIAL PRIMARY KEY,
+    computed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+
+    team_id INTEGER NOT NULL REFERENCES teams(id),
+
+    group_letter CHAR(1) NOT NULL,
+
+    played INTEGER NOT NULL,
+    wins INTEGER NOT NULL,
+    draws INTEGER NOT NULL,
+    losses INTEGER NOT NULL,
+
+    goals_for INTEGER NOT NULL,
+    goals_against INTEGER NOT NULL,
+    goal_difference INTEGER NOT NULL,
+
+    points INTEGER NOT NULL,
+    rank INTEGER NOT NULL
+);

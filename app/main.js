@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const pg = require('pg');
 const { Pool } = pg;
 const client = require('prom-client');
+const { calculateStandings } = require('./services/standing');
 
 // Override pg's default DATE parser to return raw strings (YYYY-MM-DD)
 // instead of JavaScript Date objects, avoiding timezone-related date shifts.
@@ -177,84 +178,22 @@ app.get('/api/matches', async (req, res) => {
 
 // GET /api/standings - Classement par groupe
 app.get('/api/standings', async (req, res) => {
-  try {
-    const matchesResult = await pool.query(`
-      SELECT m.team_home_id, m.team_away_id, m.score_home, m.score_away
-      FROM matches m
-      WHERE m.stage = 'Group Stage'
-    `);
-    const teamsResult = await pool.query('SELECT id, name, group_letter, country_code FROM teams ORDER BY group_letter, name');
 
-    // Build standings
-    const standings = {};
-    for (const team of teamsResult.rows) {
-      standings[team.id] = {
-        id: team.id,
-        name: team.name,
-        group_letter: team.group_letter,
-        country_code: team.country_code,
-        played: 0,
-        won: 0,
-        drawn: 0,
-        lost: 0,
-        goals_for: 0,
-        goals_against: 0,
-        goal_difference: 0,
-        points: 0,
-      };
+    try {
+
+        const groups = await calculateStandings(pool);
+
+        res.status(200).json(groups);
+
+    } catch (error) {
+
+        res.status(500).json({
+            status: "error",
+            message: "Erreur lors du calcul des classements"
+        });
+
     }
 
-    for (const match of matchesResult.rows) {
-      const home = standings[match.team_home_id];
-      const away = standings[match.team_away_id];
-      if (!home || !away) continue;
-
-      home.played++;
-      away.played++;
-      home.goals_for += match.score_home;
-      home.goals_against += match.score_away;
-      away.goals_for += match.score_away;
-      away.goals_against += match.score_home;
-
-      if (match.score_home > match.score_away) {
-        home.won++;
-        home.points += 3;
-        away.lost++;
-      } else if (match.score_home < match.score_away) {
-        away.won++;
-        away.points += 3;
-        home.lost++;
-      } else {
-        home.drawn++;
-        away.drawn++;
-        home.points += 1;
-        away.points += 1;
-      }
-    }
-
-    // Calculate goal difference and group
-    const groups = {};
-    for (const team of Object.values(standings)) {
-      team.goal_difference = team.goals_for - team.goals_against;
-      if (!groups[team.group_letter]) {
-        groups[team.group_letter] = [];
-      }
-      groups[team.group_letter].push(team);
-    }
-
-    // Sort each group by points, goal difference, goals scored
-    for (const group of Object.keys(groups)) {
-      groups[group].sort((a, b) => {
-        if (b.points !== a.points) return b.points - a.points;
-        if (b.goal_difference !== a.goal_difference) return b.goal_difference - a.goal_difference;
-        return b.goals_for - a.goals_for;
-      });
-    }
-
-    res.status(200).json(groups);
-  } catch (error) {
-    res.status(500).json({ status: 'error', message: 'Erreur lors du calcul des classements' });
-  }
 });
 
 // ============================================================

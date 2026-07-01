@@ -10,6 +10,8 @@ WORKDIR /app
 
 COPY --from=builder --chown=node:node /build/node_modules ./node_modules
 COPY --chown=node:node main.js ./
+COPY --chown=node:node services/ ./services/
+COPY --chown=node:node jobs/ ./jobs/
 COPY --chown=node:node public/ ./public/
 
 # Runtime image does not need npm/corepack. Removing them reduces image surface

@@ -36,6 +36,8 @@ alertmanager:
         memory: 128Mi
       limits:
         memory: 256Mi
+  # Notifications: see k8s/monitoring/alertmanager-config.example.yaml
+  # and docs/GUIDE-ALERTES-WORLDCUP.md (ntfy webhook, email, etc.)
 
 kubeStateMetrics:
   enabled: true
